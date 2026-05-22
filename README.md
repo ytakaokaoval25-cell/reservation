@@ -7,30 +7,45 @@ pip install playwright
 playwright install chromium
 ```
 
+---
+
 ## ファイル構成
 
 | ファイル | 役割 |
 |---|---|
-| `analyze_site.py` | サイト構造解析（各ステップのHTML/スクリーンショット保存） |
+| `analyze_site.py` | サイト構造解析（HTML/スクリーンショット保存） |
 | `reserve.py` | 本番自動予約スクリプト |
 
 ---
 
-## Step 1: まず解析スクリプトを実行してセレクターを確認する
+## 運用フロー（全体像）
+
+```
+[練習] 今すぐ → 令和08年06月19日 D面16:00〜18:00 を手動テスト
+    ↓ スクリプトが正常動作したら
+[本番] 6月19日 朝4:55頃にPCを起動してスクリプトをセット
+    → 5:00:00 JST ぴったりに令和08年07月XX日 D面16:00〜18:00 を自動予約
+```
+
+---
+
+## Step 1: サイト構造を解析する（初回必須）
 
 ```bash
 python analyze_site.py
 ```
 
-実行後、`analysis_output/` フォルダに以下が生成されます：
+`analysis_output/` フォルダに以下が生成されます：
 
-- `01_login_page.html/png` — ログインページ
-- `02_after_login.html/png` — ログイン後メニュー
-- `03_after_favorite.html/png` — お気に入り絞り込み画面
-- `04_search_results.html/png` — 検索結果（予約表）
+| ファイル | 内容 |
+|---|---|
+| `01_login_page.html/png` | ログインページ |
+| `02_after_login.html/png` | ログイン後メニュー |
+| `03_after_favorite.html/png` | お気に入り絞り込み画面 |
+| `04_search_results.html/png` | 検索結果（予約表） |
 
-コンソールに出力された `FORM / INPUT / SELECT / OPTION` の情報でセレクターを確認し、
-必要であれば `reserve.py` の定数・セレクターリストを修正してください。
+コンソール出力の `FORM / INPUT / SELECT / OPTION` を確認し、
+セレクターが合わない場合は `reserve.py` の各 `try_fill` / `try_click` リストを修正します。
 
 ---
 
@@ -40,37 +55,44 @@ python analyze_site.py
 python reserve.py --now --headful
 ```
 
-`screenshots/` フォルダに各ステップのスクリーンショットが保存されます。
+`screenshots/` フォルダに各ステップのスクリーンショットが保存されます。  
+ステップごとに動作確認してください。
 
 ---
 
-## Step 3: 本番実行（5月19日 朝4:55頃にセット）
+## Step 3: 本番実行（6月19日 朝5:00:00 JST）
+
+### 7月の対象日を指定して起動
 
 ```bash
-python reserve.py --headful
+# 例: 令和08年07月19日 D面16:00〜18:00 を予約する場合
+python reserve.py --date 20260719
 ```
 
-- 朝5:00:00 ぴったりまでミリ秒単位で待機
-- 5:00:00 到達と同時に検索・予約処理を開始
+- JST 朝5:00:00.000 ぴったりまでミリ秒単位で待機
+- 到達と同時に検索・予約処理を開始
 
-ヘッドレスで実行する場合（サーバー/cronなど）:
+### ブラウザ表示ありで実行（視覚確認しながら）
 
 ```bash
-python reserve.py
+python reserve.py --date 20260719 --headful
+```
+
+### ヘッドレス（サーバー・バックグラウンド実行）
+
+```bash
+python reserve.py --date 20260719
 ```
 
 ---
 
-## 本番（7月分）への変更方法
+## コマンドライン引数まとめ
 
-`reserve.py` の上部定数を変更してください：
-
-```python
-TARGET_DATE_WAREKI    = "令和08年07月XX日"   # 7月の目標日に変更
-TARGET_DATE_VALUE     = "2026XXXX"           # 対応するvalue値
-TARGET_DATE_ALT_VALUES = ["2026XXXX", ...]   # 同上
-TARGET_DATE_ALT_TEXTS  = ["令和08年07月XX日", ...]
-```
+| 引数 | 効果 |
+|---|---|
+| `--now` | 時報待ちをスキップして即時実行（テスト用） |
+| `--headful` | ブラウザウィンドウを表示（デバッグ用） |
+| `--date YYYYMMDD` | 予約対象日を上書き（例: `--date 20260719`） |
 
 ---
 
@@ -80,10 +102,14 @@ TARGET_DATE_ALT_TEXTS  = ["令和08年07月XX日", ...]
 1. `analyze_site.py` を実行して `analysis_output/*.html` を確認
 2. `reserve.py` の各 `try_click` / `try_fill` のセレクターリストを修正
 
-### 日付が見つからない場合
+### 日付プルダウンが選択されない場合
 - `analyze_site.py` の「日付プルダウン詳細解析」出力を確認
-- `TARGET_DATE_ALT_VALUES` / `TARGET_DATE_ALT_TEXTS` に実際のvalue/textを追加
+- `reserve.py` の `_alt_values_from_yyyymmdd` / `_wareki_from_yyyymmdd` に実際のvalue/textパターンを追加
 
 ### D面セルが見つからない場合
-- `analysis_output/04_search_results.html` でテーブル構造を確認
-- `reserve.py` の `step_select_slot()` 内のアプローチ②③を修正
+- `screenshots/04_search_results.png` と `analysis_output/04_search_results.html` でテーブル構造を確認
+- `reserve.py` の `step_select_slot()` 内アプローチ①②③を調整
+
+### window.confirm が表示されてしまう場合
+- Tampermonkey の `window.confirm = () => true` に加え、スクリプト内でも `context.add_init_script` で無効化済み
+- それでも発火する場合は `page.on("dialog", ...)` のフォールバックが自動承認します
