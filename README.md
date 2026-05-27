@@ -1,5 +1,10 @@
 # まんまるよやく2 自動予約スクリプト
 
+対象サイト: https://www.manmaruyoyaku2.jp/mnet/reserve/gin_menu2  
+目的: D面 16:00〜18:00 を朝5:00:00.000 ちょうどに予約確定する
+
+---
+
 ## 環境セットアップ
 
 ```bash
@@ -7,30 +12,62 @@ pip install playwright
 playwright install chromium
 ```
 
+---
+
 ## ファイル構成
 
 | ファイル | 役割 |
 |---|---|
-| `analyze_site.py` | サイト構造解析（各ステップのHTML/スクリーンショット保存） |
+| `analyze_site.py` | サイト構造解析（HTML・スクリーンショット保存） |
 | `reserve.py` | 本番自動予約スクリプト |
 
 ---
 
-## Step 1: まず解析スクリプトを実行してセレクターを確認する
+## 実行フロー（重要）
+
+```
+スクリプト起動（4:55頃推奨）
+    ↓
+Step 1: ログイン
+    ↓
+Step 2: お気に入りをクリック → 絞り込み画面へ
+    ↓
+⏰ 朝 5:00:00.000 まで 1ms 単位でビジーウェイト
+    ↓ ← サイトが5:00に更新（新日付追加）
+Step 3: 日付選択 → 検索クリック（最速）
+    ↓
+Step 4: D面 16:00〜18:00 の赤丸セルをクリック
+    ↓
+Step 5: 確定①（料金確認画面へ）
+    ↓
+Step 6: 確定②（最終確定）← window.confirm は無効化済み前提
+```
+
+**ポイント**: ログインとお気に入り画面への移動は5:00 AM前に完了させ、
+サイト更新と同時に日付選択・検索を実行することで最速予約を実現します。
+
+---
+
+## Step 1: 解析スクリプトで実際のセレクターを確認する
+
+本番前に一度実行してください（実際にログイン・操作します）。
 
 ```bash
 python analyze_site.py
 ```
 
-実行後、`analysis_output/` フォルダに以下が生成されます：
+`analysis_output/` フォルダに以下が生成されます：
 
-- `01_login_page.html/png` — ログインページ
-- `02_after_login.html/png` — ログイン後メニュー
-- `03_after_favorite.html/png` — お気に入り絞り込み画面
-- `04_search_results.html/png` — 検索結果（予約表）
+| ファイル | 内容 |
+|---|---|
+| `01_login_page.html/png` | ログインページのHTML・スクリーンショット |
+| `02_after_login.html/png` | ログイン後メニュー |
+| `03_after_favorite.html/png` | お気に入り絞り込み画面 |
+| `04_search_results.html/png` | 検索結果（予約表） |
+| `console_output.txt` | 全フォーム要素・SELECT・OPTIONS の詳細ログ |
 
-コンソールに出力された `FORM / INPUT / SELECT / OPTION` の情報でセレクターを確認し、
-必要であれば `reserve.py` の定数・セレクターリストを修正してください。
+`console_output.txt` に出力された `OPTION value=...` の実際の値を確認し、
+必要であれば `reserve.py` の定数を修正してください。
 
 ---
 
@@ -40,50 +77,64 @@ python analyze_site.py
 python reserve.py --now --headful
 ```
 
-`screenshots/` フォルダに各ステップのスクリーンショットが保存されます。
+`screenshots/` フォルダに各ステップのスクリーンショットが保存されます。  
+エラーが出た場合は `screenshots/ERROR_*.png` を確認してください。
 
 ---
 
-## Step 3: 本番実行（5月19日 朝4:55頃にセット）
+## Step 3: 本番実行（6月19日 朝4:55頃に起動）
 
 ```bash
+# ブラウザ表示あり（推奨・状況確認できる）
 python reserve.py --headful
-```
 
-- 朝5:00:00 ぴったりまでミリ秒単位で待機
-- 5:00:00 到達と同時に検索・予約処理を開始
-
-ヘッドレスで実行する場合（サーバー/cronなど）:
-
-```bash
+# ヘッドレス（サーバー・cron 等）
 python reserve.py
 ```
 
+- 朝 5:00:00.000 ぴったりまでミリ秒単位で待機します
+- 到達と同時に日付選択 → 検索クリックを実行します
+
 ---
 
-## 本番（7月分）への変更方法
+## 本番（8月分）への変更方法
 
-`reserve.py` の上部定数を変更してください：
+`reserve.py` 上部の定数を変更してください：
 
 ```python
-TARGET_DATE_WAREKI    = "令和08年07月XX日"   # 7月の目標日に変更
-TARGET_DATE_VALUE     = "2026XXXX"           # 対応するvalue値
-TARGET_DATE_ALT_VALUES = ["2026XXXX", ...]   # 同上
-TARGET_DATE_ALT_TEXTS  = ["令和08年07月XX日", ...]
+TARGET_DATE_WAREKI = "令和08年08月XX日"   # 8月の目標日に変更
+
+TARGET_DATE_VALUES = [
+    "20260819",          # ← 実際の value を analyze_site.py で確認して入れる
+    "2026-08-19",
+]
+TARGET_DATE_TEXTS = [
+    "令和08年08月19日",   # ← 実際の text を confirm
+]
 ```
 
 ---
 
 ## トラブルシューティング
 
-### セレクターが合わない場合
-1. `analyze_site.py` を実行して `analysis_output/*.html` を確認
-2. `reserve.py` の各 `try_click` / `try_fill` のセレクターリストを修正
+### ログインできない
+1. `analysis_output/01_login_page.html` でフォームの `name` 属性を確認
+2. `reserve.py` の `step_login()` のセレクターリストに正しい `name` を追加
 
-### 日付が見つからない場合
-- `analyze_site.py` の「日付プルダウン詳細解析」出力を確認
-- `TARGET_DATE_ALT_VALUES` / `TARGET_DATE_ALT_TEXTS` に実際のvalue/textを追加
+### お気に入りが見つからない
+1. `analysis_output/02_after_login.html` でメニューのリンクテキストを確認
+2. `reserve.py` の `step_favorite()` のセレクターリストを修正
 
-### D面セルが見つからない場合
-- `analysis_output/04_search_results.html` でテーブル構造を確認
-- `reserve.py` の `step_select_slot()` 内のアプローチ②③を修正
+### 日付が見つからない
+1. `analysis_output/console_output.txt` の「日付プルダウン詳細解析」を確認
+2. `TARGET_DATE_VALUES` / `TARGET_DATE_TEXTS` に実際の value / text を追加
+3. 年・月・日が別 SELECT の場合: `TARGET_YEAR_VALUES` 等を確認
+
+### D面セルが見つからない
+1. `analysis_output/04_search_results.html` でテーブル構造を確認
+2. `screenshots/04_search_results.png` で画面を目視確認
+3. `reserve.py` の `step_select_slot()` を修正（アプローチ①〜③を参照）
+
+### window.confirm が出てしまう
+- `reserve.py` の `context.add_init_script` で `window.confirm = () => true` を設定済み
+- Tampermonkey との二重対策になっています
