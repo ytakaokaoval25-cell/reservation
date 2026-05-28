@@ -71,11 +71,16 @@ async def dump_form_elements(page, label: str):
 
 async def analyze():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            executable_path="/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             locale="ja-JP",
+            ignore_https_errors=True,
         )
         page = await context.new_page()
 
