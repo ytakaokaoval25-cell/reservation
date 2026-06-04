@@ -1,0 +1,4 @@
+analysis_output/
+screenshots/
+__pycache__/
+*.pyc
