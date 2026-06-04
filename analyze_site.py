@@ -1,6 +1,21 @@
 """
 まんまるよやく2 サイト構造解析スクリプト
-各ステップのHTML・スクリーンショットを保存して正確なセレクターを確認する
+─────────────────────────────────────────────
+【使い方】
+  pip install playwright
+  playwright install chromium
+  python analyze_site.py
+
+実行後、analysis_output/ フォルダに
+  01_login.html / 01_login.png
+  02_after_login.html / 02_after_login.png
+  03_favorite_filter.html / 03_favorite_filter.png
+  04_search_results.html / 04_search_results.png
+が保存されます。
+
+これらの HTML を確認して reserve.py の
+CONFIRMED_* セレクター変数を設定してください。
+─────────────────────────────────────────────
 """
 
 import asyncio
@@ -8,274 +23,242 @@ import os
 from playwright.async_api import async_playwright
 
 LOGIN_URL = "https://www.manmaruyoyaku2.jp/mnet/reserve/gin_menu2"
-USER_ID = "12015873"
-PASSWORD = "0508"
+USER_ID   = "12015873"
+PASSWORD  = "0508"
 OUTPUT_DIR = "analysis_output"
 
+# 解析する対象日
+TARGET_DATE_TEXTS = [
+    "令和08年06月19日", "令和8年06月19日",
+    "令和08年06月", "令和8年6月",
+    "2026年06月19日", "2026/06/19",
+]
+TARGET_DATE_VALUES = ["20260619", "2026-06-19", "260619"]
 
+
+# ──────────────────────────────────────────────────────────────────────
+# ユーティリティ
+# ──────────────────────────────────────────────────────────────────────
 async def save_step(page, step_name: str):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    await page.screenshot(path=f"{OUTPUT_DIR}/{step_name}.png", full_page=True)
-    html = await page.content()
-    with open(f"{OUTPUT_DIR}/{step_name}.html", "w", encoding="utf-8") as f:
-        f.write(html)
-    print(f"[SAVED] {step_name}.png / {step_name}.html")
+    png  = f"{OUTPUT_DIR}/{step_name}.png"
+    html = f"{OUTPUT_DIR}/{step_name}.html"
+    await page.screenshot(path=png, full_page=True)
+    content = await page.content()
+    with open(html, "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"  [保存] {png}  {html}")
 
 
-async def dump_form_elements(page, label: str):
-    """ページ内のすべてのフォーム要素を出力"""
-    print(f"\n=== {label} のフォーム要素 ===")
+async def dump_elements(page, label: str):
+    """ページ内の全フォーム要素・リンクを標準出力へダンプ"""
+    print(f"\n{'='*60}")
+    print(f"  {label}  URL={page.url}")
+    print(f"{'='*60}")
 
-    # input要素
-    inputs = await page.query_selector_all("input")
-    for inp in inputs:
-        t = await inp.get_attribute("type") or "text"
-        name = await inp.get_attribute("name") or ""
-        id_ = await inp.get_attribute("id") or ""
-        cls = await inp.get_attribute("class") or ""
-        val = await inp.get_attribute("value") or ""
-        print(f"  INPUT type={t} name={name!r} id={id_!r} class={cls!r} value={val!r}")
+    # INPUT / SELECT / BUTTON / TEXTAREA
+    for el in await page.query_selector_all("input, select, button, textarea"):
+        tag  = await el.evaluate("el => el.tagName.toLowerCase()")
+        name = await el.get_attribute("name") or ""
+        id_  = await el.get_attribute("id") or ""
+        typ  = await el.get_attribute("type") or ""
+        val  = await el.get_attribute("value") or ""
+        cls  = await el.get_attribute("class") or ""
+        ph   = await el.get_attribute("placeholder") or ""
+        try:
+            txt = (await el.inner_text()).strip()[:40]
+        except Exception:
+            txt = ""
 
-    # select要素
-    selects = await page.query_selector_all("select")
-    for sel in selects:
-        name = await sel.get_attribute("name") or ""
-        id_ = await sel.get_attribute("id") or ""
-        cls = await sel.get_attribute("class") or ""
-        print(f"  SELECT name={name!r} id={id_!r} class={cls!r}")
-        options = await sel.query_selector_all("option")
-        for opt in options[:20]:  # 最大20件
-            v = await opt.get_attribute("value") or ""
-            txt = (await opt.inner_text()).strip()
-            print(f"    OPTION value={v!r} text={txt!r}")
+        if tag == "select":
+            print(f"  <SELECT> name={name!r} id={id_!r} class={cls!r}")
+            for opt in await el.query_selector_all("option"):
+                ov  = await opt.get_attribute("value") or ""
+                otx = (await opt.inner_text()).strip()
+                sel = " ← ★" if any(t in otx for t in TARGET_DATE_TEXTS) \
+                              or ov in TARGET_DATE_VALUES else ""
+                print(f"    OPTION value={ov!r} text={otx!r}{sel}")
+        else:
+            print(f"  <{tag.upper()}> type={typ!r} name={name!r} id={id_!r} "
+                  f"value={val!r} placeholder={ph!r} class={cls!r} text={txt!r}")
 
-    # button/submit
-    buttons = await page.query_selector_all("button, input[type=submit], input[type=button]")
-    for btn in buttons:
-        t = await btn.get_attribute("type") or ""
-        name = await btn.get_attribute("name") or ""
-        id_ = await btn.get_attribute("id") or ""
-        val = await btn.get_attribute("value") or ""
-        txt = (await btn.inner_text()).strip() if await btn.inner_text() else val
-        print(f"  BUTTON type={t} name={name!r} id={id_!r} value={val!r} text={txt!r}")
+    # FORM
+    print()
+    for form in await page.query_selector_all("form"):
+        action = await form.get_attribute("action") or ""
+        method = await form.get_attribute("method") or ""
+        id_    = await form.get_attribute("id") or ""
+        print(f"  <FORM> action={action!r} method={method!r} id={id_!r}")
 
-    # アンカーリンク（メニューナビ用）
-    links = await page.query_selector_all("a")
-    print(f"\n  --- リンク一覧 ---")
-    for link in links:
+    # リンク
+    print()
+    for link in await page.query_selector_all("a"):
         href = await link.get_attribute("href") or ""
-        txt = (await link.inner_text()).strip()
+        txt  = (await link.inner_text()).strip()
         if txt:
-            print(f"  A href={href!r} text={txt!r}")
+            flag = " ← ★お気に入り" if "お気に入り" in txt else ""
+            print(f"  <A> href={href!r} text={txt!r}{flag}")
 
 
+async def dump_table_structure(page, label: str):
+    """検索結果テーブルの行・セル構造を出力"""
+    print(f"\n{'─'*60}")
+    print(f"  テーブル構造: {label}")
+    print(f"{'─'*60}")
+
+    tables = await page.query_selector_all("table")
+    print(f"  テーブル数: {len(tables)}")
+
+    for ti, table in enumerate(tables):
+        rows = await table.query_selector_all("tr")
+        print(f"\n  TABLE[{ti}] {len(rows)}行")
+        for ri, row in enumerate(rows):
+            cells = await row.query_selector_all("td, th")
+            row_info = []
+            for ci, cell in enumerate(cells):
+                txt    = (await cell.inner_text()).strip()
+                cls    = await cell.get_attribute("class") or ""
+                id_    = await cell.get_attribute("id") or ""
+                onclick = await cell.get_attribute("onclick") or ""
+                summary = f"[{ci}]{txt[:20]}"
+                if cls:
+                    summary += f"(cls={cls})"
+                if onclick:
+                    summary += f"(onclick={onclick[:30]})"
+                # D面 / 16:00 に関係するセルを強調
+                if "D面" in txt or "16:00" in txt or "18:00" in txt:
+                    summary = "★" + summary
+                row_info.append(summary)
+            if row_info:
+                print(f"    ROW[{ri}]: " + " | ".join(row_info))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# メイン解析フロー
+# ──────────────────────────────────────────────────────────────────────
 async def analyze():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
+        )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
             locale="ja-JP",
+            ignore_https_errors=True,
         )
         page = await context.new_page()
 
-        # ── Step 1: ログインページ ──────────────────────────────
-        print("\n[Step 1] ログインページに移動...")
+        # ── Step 1: ログインページ ─────────────────────────────────
+        print("\n[Step 1] ログインページ取得...")
         await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
-        await save_step(page, "01_login_page")
-        await dump_form_elements(page, "ログインページ")
+        await save_step(page, "01_login")
+        await dump_elements(page, "ログインページ")
 
-        # ログインフォームのaction属性確認
-        form = await page.query_selector("form")
-        if form:
-            action = await form.get_attribute("action") or ""
-            method = await form.get_attribute("method") or ""
-            print(f"\n  FORM action={action!r} method={method!r}")
-
-        # ── Step 2: ログイン実行 ───────────────────────────────
+        # ── Step 2: ログイン実行 ───────────────────────────────────
         print("\n[Step 2] ログイン実行...")
-        # 利用者番号入力（複数セレクター候補を試す）
-        userid_selectors = [
-            'input[name="userid"]',
-            'input[name="user_id"]',
-            'input[name="memberNo"]',
-            'input[name="userno"]',
-            'input[name="loginId"]',
-            'input[name="login_id"]',
-            'input[id="userid"]',
-            'input[type="text"]:first-of-type',
-        ]
-        userid_filled = False
-        for sel in userid_selectors:
-            try:
-                elem = await page.wait_for_selector(sel, timeout=2000)
-                if elem:
-                    await elem.fill(USER_ID)
-                    print(f"  [OK] 利用者番号入力: {sel}")
-                    userid_filled = True
-                    break
-            except Exception:
-                pass
-        if not userid_filled:
-            print("  [WARNING] 利用者番号フィールドが見つかりません")
+        # テキスト入力欄（1番目）に利用者番号を入れる
+        text_inputs = await page.query_selector_all(
+            'input[type="text"], input:not([type])'
+        )
+        if text_inputs:
+            await text_inputs[0].fill(USER_ID)
+            name = await text_inputs[0].get_attribute("name") or "?"
+            print(f"  利用者番号入力: name={name!r}")
+        else:
+            print("  ⚠ テキスト入力欄が見つかりません")
 
-        # パスワード入力
-        passwd_selectors = [
-            'input[name="passwd"]',
-            'input[name="password"]',
-            'input[name="pass"]',
-            'input[type="password"]',
-        ]
-        passwd_filled = False
-        for sel in passwd_selectors:
-            try:
-                elem = await page.wait_for_selector(sel, timeout=2000)
-                if elem:
-                    await elem.fill(PASSWORD)
-                    print(f"  [OK] パスワード入力: {sel}")
-                    passwd_filled = True
-                    break
-            except Exception:
-                pass
-        if not passwd_filled:
-            print("  [WARNING] パスワードフィールドが見つかりません")
+        pw_inputs = await page.query_selector_all('input[type="password"]')
+        if pw_inputs:
+            await pw_inputs[0].fill(PASSWORD)
+            name = await pw_inputs[0].get_attribute("name") or "?"
+            print(f"  パスワード入力: name={name!r}")
+        else:
+            print("  ⚠ パスワード欄が見つかりません")
 
-        # サブミット
-        submit_selectors = [
-            'input[type="submit"]',
-            'button[type="submit"]',
-            'input[name="submit"]',
-            'button:has-text("ログイン")',
-            'input[value="ログイン"]',
-        ]
-        for sel in submit_selectors:
-            try:
-                elem = await page.wait_for_selector(sel, timeout=2000)
-                if elem:
-                    await elem.click()
-                    print(f"  [OK] サブミットクリック: {sel}")
-                    break
-            except Exception:
-                pass
+        submits = await page.query_selector_all(
+            'input[type="submit"], button[type="submit"], button'
+        )
+        if submits:
+            val = await submits[0].get_attribute("value") or ""
+            txt = (await submits[0].inner_text()).strip()
+            print(f"  サブミットクリック: value={val!r} text={txt!r}")
+            await submits[0].click()
+        else:
+            print("  ⚠ サブミットボタンが見つかりません")
 
-        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_load_state("networkidle", timeout=20000)
         await save_step(page, "02_after_login")
-        await dump_form_elements(page, "ログイン後ページ")
-        print(f"  現在URL: {page.url}")
+        await dump_elements(page, "ログイン後メニュー")
+        print(f"  ログイン後URL: {page.url}")
 
-        # ── Step 3: お気に入りクリック ─────────────────────────
+        # ── Step 3: お気に入りクリック ─────────────────────────────
         print("\n[Step 3] お気に入りクリック...")
-        fav_selectors = [
-            'a:has-text("お気に入り")',
-            'input[value*="お気に入り"]',
-            'button:has-text("お気に入り")',
-            '*:has-text("お気に入り")',
-        ]
-        for sel in fav_selectors:
+        clicked = False
+        for elem in await page.query_selector_all("a, button, input[type=button], input[type=submit]"):
             try:
-                elem = await page.wait_for_selector(sel, timeout=3000)
-                if elem:
-                    txt = (await elem.inner_text()).strip()
-                    print(f"  [OK] お気に入り要素: {sel} text={txt!r}")
+                txt = (await elem.inner_text()).strip()
+                val = await elem.get_attribute("value") or ""
+                href = await elem.get_attribute("href") or ""
+                if "お気に入り" in txt or "お気に入り" in val:
+                    print(f"  クリック: text={txt!r} href={href!r}")
                     await elem.click()
+                    clicked = True
                     break
             except Exception:
                 pass
+        if not clicked:
+            print("  ⚠ お気に入りが見つかりません。02_after_login.html を確認してください。")
 
-        await page.wait_for_load_state("networkidle", timeout=15000)
-        await save_step(page, "03_after_favorite")
-        await dump_form_elements(page, "お気に入り後（絞り込み画面）")
-        print(f"  現在URL: {page.url}")
+        await page.wait_for_load_state("networkidle", timeout=20000)
+        await save_step(page, "03_favorite_filter")
+        await dump_elements(page, "絞り込み（お気に入り）画面")
 
-        # ── Step 4: 日付セレクト解析 ──────────────────────────
-        print("\n[Step 4] 日付プルダウン詳細解析...")
-        date_selects = await page.query_selector_all("select")
-        for sel in date_selects:
-            name = await sel.get_attribute("name") or ""
-            id_ = await sel.get_attribute("id") or ""
-            options = await sel.query_selector_all("option")
-            print(f"\n  SELECT name={name!r} id={id_!r} - {len(options)}件のオプション")
-            for opt in options:
-                v = await opt.get_attribute("value") or ""
-                txt = (await opt.inner_text()).strip()
-                print(f"    value={v!r}  text={txt!r}")
-
-        # ── Step 5: 日付選択・検索 ────────────────────────────
-        print("\n[Step 5] 令和08年06月19日を選択して検索...")
-        # 日付選択: テキスト「令和08年06月19日」が含まれるoption、またはvalue=20260619
-        date_target_values = ["20260619", "2026-06-19", "260619", "0619"]
-        date_target_texts = ["令和08年06月19日", "令和8年6月19日", "2026/06/19"]
-
+        # ── Step 4: 日付選択・検索 ────────────────────────────────
+        print(f"\n[Step 4] 日付選択: {TARGET_DATE_TEXTS[0]}")
         date_selected = False
         for sel_elem in await page.query_selector_all("select"):
-            options = await sel_elem.query_selector_all("option")
-            for opt in options:
-                v = await opt.get_attribute("value") or ""
+            for opt in await sel_elem.query_selector_all("option"):
                 txt = (await opt.inner_text()).strip()
-                if any(t in txt for t in date_target_texts) or v in date_target_values:
-                    name = await sel_elem.get_attribute("name") or ""
-                    await sel_elem.select_option(value=v)
-                    print(f"  [OK] 日付選択: name={name!r} value={v!r} text={txt!r}")
+                v   = await opt.get_attribute("value") or ""
+                if (any(t in txt for t in TARGET_DATE_TEXTS)
+                        or v in TARGET_DATE_VALUES):
+                    sel_name = await sel_elem.get_attribute("name") or ""
+                    await sel_elem.select_option(value=v if v else txt)
+                    print(f"  日付選択: name={sel_name!r} value={v!r} text={txt!r}")
                     date_selected = True
                     break
             if date_selected:
                 break
-
         if not date_selected:
-            print("  [WARNING] 日付が見つかりません。スクリーンショットを確認してください")
+            print("  ⚠ 日付が見つかりません。03_favorite_filter.html を確認してください。")
 
-        # 検索ボタンクリック
-        search_selectors = [
-            'input[type="submit"]',
-            'button[type="submit"]',
-            'input[value*="検索"]',
-            'button:has-text("検索")',
-            'a:has-text("検索")',
-        ]
-        for sel in search_selectors:
+        # 検索ボタン
+        for sel in ['input[value="検索"]', 'button:text("検索")',
+                    'input[type="submit"]', 'button[type="submit"]']:
             try:
                 elem = await page.wait_for_selector(sel, timeout=2000)
                 if elem:
-                    print(f"  [OK] 検索ボタン: {sel}")
+                    print(f"  検索ボタンクリック: {sel}")
                     await elem.click()
                     break
             except Exception:
                 pass
 
-        await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_load_state("networkidle", timeout=20000)
         await save_step(page, "04_search_results")
-        print(f"  現在URL: {page.url}")
-
-        # ── Step 6: 検索結果テーブル解析 ─────────────────────
-        print("\n[Step 6] 検索結果テーブル解析...")
-        html = await page.content()
-        # D面 16:00～18:00 を含むセルを探す
-        cells = await page.query_selector_all("td, th")
-        for i, cell in enumerate(cells):
-            txt = (await cell.inner_text()).strip()
-            if "D面" in txt or "16:00" in txt or "18:00" in txt:
-                id_ = await cell.get_attribute("id") or ""
-                cls = await cell.get_attribute("class") or ""
-                onclick = await cell.get_attribute("onclick") or ""
-                print(f"  CELL[{i}] id={id_!r} class={cls!r} onclick={onclick!r} text={txt!r}")
-
-        # テーブル全体の構造を表示
-        tables = await page.query_selector_all("table")
-        print(f"\n  テーブル数: {len(tables)}")
-        for ti, tbl in enumerate(tables):
-            rows = await tbl.query_selector_all("tr")
-            print(f"\n  TABLE[{ti}] 行数={len(rows)}")
-            for ri, row in enumerate(rows[:5]):  # 最初の5行
-                cells_in_row = await row.query_selector_all("td, th")
-                row_texts = []
-                for cell in cells_in_row:
-                    txt = (await cell.inner_text()).strip()
-                    cls = await cell.get_attribute("class") or ""
-                    row_texts.append(f"{txt}(cls={cls})")
-                print(f"    ROW[{ri}]: {' | '.join(row_texts[:8])}")
+        await dump_elements(page, "検索結果画面")
+        await dump_table_structure(page, "検索結果テーブル")
 
         await browser.close()
-        print(f"\n\n解析完了。{OUTPUT_DIR}/ フォルダを確認してください。")
+        print(f"\n\n✅ 解析完了。{OUTPUT_DIR}/ フォルダを確認してください。")
+        print("  reserve.py の CONFIRMED_* 変数に正しいセレクターを設定してください。")
 
 
 if __name__ == "__main__":
