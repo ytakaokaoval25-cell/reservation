@@ -4,13 +4,32 @@
 """
 
 import asyncio
+import glob
 import os
+import sys
 from playwright.async_api import async_playwright
 
 LOGIN_URL = "https://www.manmaruyoyaku2.jp/mnet/reserve/gin_menu2"
 USER_ID = "12015873"
 PASSWORD = "0508"
 OUTPUT_DIR = "analysis_output"
+
+
+def find_chromium_executable() -> str | None:
+    """インストール済みのChromium実行ファイルを自動検出する"""
+    candidates = [
+        # Linux: Playwright管理のChromium
+        "/opt/pw-browsers/chromium-*/chrome-linux/chrome",
+        os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux/chrome"),
+        # macOS
+        os.path.expanduser("~/Library/Caches/ms-playwright/chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
+        # Windows (WSL等は除外)
+    ]
+    for pattern in candidates:
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            return matches[-1]  # 最新バージョンを使用
+    return None
 
 
 async def save_step(page, step_name: str):
@@ -70,8 +89,18 @@ async def dump_form_elements(page, label: str):
 
 
 async def analyze():
+    # Chromium実行ファイルを自動検出
+    chromium_path = find_chromium_executable()
+    launch_kwargs: dict = {
+        "headless": True,
+        "args": ["--no-sandbox", "--disable-setuid-sandbox", "--ignore-certificate-errors"],
+    }
+    if chromium_path:
+        print(f"[INFO] Chromium: {chromium_path}")
+        launch_kwargs["executable_path"] = chromium_path
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -81,7 +110,17 @@ async def analyze():
 
         # ── Step 1: ログインページ ──────────────────────────────
         print("\n[Step 1] ログインページに移動...")
-        await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
+        response = await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
+
+        # アクセス制限チェック
+        if response and response.status == 403:
+            body = await page.inner_text("body")
+            if "allowlist" in body or "not in allowlist" in body:
+                print("\n[ERROR] このサーバーはサイトのIPホワイトリストに含まれていません。")
+                print("        ローカルPC（接続許可済みのネットワーク）から実行してください。")
+                await browser.close()
+                sys.exit(1)
+
         await save_step(page, "01_login_page")
         await dump_form_elements(page, "ログインページ")
 
