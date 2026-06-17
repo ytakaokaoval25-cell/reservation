@@ -1,9 +1,9 @@
 """
 まんまるよやく2 自動予約スクリプト
-対象: D面 16:00〜18:00 / 令和08年06月19日（練習）→ 本番は07月分に変更
+対象: D面 16:00〜18:00 / 令和08年06月19日（練習）
 
 ■ 使い方
-  python reserve.py              # 朝5:00ぴったり待ちモード（本番）
+  python reserve.py              # 朝5:00:00 JST 時報待ちモード（本番）
   python reserve.py --now        # 即時実行（テスト用）
   python reserve.py --headful    # ブラウザ表示あり（デバッグ用）
   python reserve.py --now --headful
@@ -11,6 +11,10 @@
 ■ 準備
   pip install playwright
   playwright install chromium
+
+■ 本番運用時（令和8年7月分予約）
+  TARGET_DATE_* と WAIT_UNTIL_* を7月用に変更して実行。
+  スクリプトは6月19日 4:00AM JST頃に起動しておくことを推奨。
 """
 
 import asyncio
@@ -19,76 +23,77 @@ import sys
 import os
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
-# ──────────────────────────────────────────────
-# 設定値
-# ──────────────────────────────────────────────
-LOGIN_URL   = "https://www.manmaruyoyaku2.jp/mnet/reserve/gin_menu2"
-USER_ID     = "12015873"
-PASSWORD    = "0508"
+# ─────────────────────────────────────────────────────────
+# ■ 設定値（ここだけ変更すれば本番・練習を切り替えられる）
+# ─────────────────────────────────────────────────────────
+LOGIN_URL = "https://www.manmaruyoyaku2.jp/mnet/reserve/gin_menu2"
+USER_ID   = "12015873"
+PASSWORD  = "0508"
 
-# 予約対象日（令和08年06月19日 = 2026-06-19 で練習。本番は変更）
-TARGET_DATE_WAREKI = "令和08年06月19日"   # プルダウンに表示されるテキスト
-TARGET_DATE_VALUE  = "20260619"           # value属性が数字形式の場合
-TARGET_DATE_ALT_VALUES = [
-    "20260619", "2026-06-19", "2026/06/19", "260619",
-]
-TARGET_DATE_ALT_TEXTS = [
-    "令和08年06月19日", "令和8年6月19日", "令和０８年０６月１９日",
+# 予約受付開始日時（JST） ← 練習: 令和08年06月19日 05:00
+WAIT_UNTIL = datetime.datetime(2026, 6, 19, 5, 0, 0,
+                               tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
+
+# 検索する日付（令和08年06月19日 = 2026-06-19）
+TARGET_DATE_WAREKI     = "令和08年06月19日"
+TARGET_DATE_ALT_TEXTS  = [
+    "令和08年06月19日", "令和8年6月19日",
+    "令和０８年０６月１９日",
     "2026年06月19日", "2026/06/19",
 ]
+TARGET_DATE_ALT_VALUES = ["20260619", "2026-06-19", "2026/06/19", "260619"]
 
 # 予約対象コート＆時間
-TARGET_FACILITY = "D面"
+TARGET_FACILITY   = "D面"
 TARGET_TIME_START = "16:00"
 TARGET_TIME_END   = "18:00"
 
-# 時報待ち設定（本番）
-OPEN_HOUR   = 5
-OPEN_MINUTE = 0
-OPEN_SECOND = 0
-
 # タイムアウト（ミリ秒）
-NAV_TIMEOUT = 30_000
+NAV_TIMEOUT  = 30_000
 ELEM_TIMEOUT = 10_000
 
 # スクリーンショット保存先（デバッグ用）
 SS_DIR = "screenshots"
-# ──────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────
 
 
 def parse_args():
     args = sys.argv[1:]
     return {
-        "headless": "--headful" not in args,
-        "wait_for_open": "--now" not in args,
+        "headless":       "--headful" not in args,
+        "wait_for_open":  "--now"     not in args,
     }
 
 
 async def wait_until_open():
-    """朝5:00:00.000 ぴったりまでミリ秒単位で待機"""
-    print("[時報待ち] 朝5:00:00.000 まで待機します...")
+    """WAIT_UNTIL（JST）ぴったりまでミリ秒単位で待機。
+    前日から起動しておいても正確に動作する。
+    """
+    print(f"[時報待ち] {WAIT_UNTIL.strftime('%Y-%m-%d %H:%M:%S')} JST まで待機します...")
+
     while True:
-        now = datetime.datetime.now()
-        target = now.replace(
-            hour=OPEN_HOUR, minute=OPEN_MINUTE, second=OPEN_SECOND, microsecond=0
-        )
-        diff_sec = (target - now).total_seconds()
+        now = datetime.datetime.now(tz=WAIT_UNTIL.tzinfo)
+        diff_sec = (WAIT_UNTIL - now).total_seconds()
 
         if diff_sec <= 0:
-            print(f"[時報] 開始時刻到達: {datetime.datetime.now().strftime('%H:%M:%S.%f')}")
+            print(f"[時報] 開始時刻到達: {now.strftime('%H:%M:%S.%f')[:-3]} JST")
             break
+        elif diff_sec > 3600:
+            # 1時間以上: 5分ごとにチェック
+            print(f"[待機] あと {diff_sec/3600:.1f}時間 ({int(diff_sec//60)}分)...")
+            await asyncio.sleep(300)
         elif diff_sec > 300:
-            # 5分以上前: 30秒ごとにチェック
-            print(f"[時報待ち] あと {diff_sec:.0f}秒 ({diff_sec/60:.1f}分)...")
+            # 5分〜1時間: 30秒ごと
+            print(f"[待機] あと {diff_sec:.0f}秒 ({diff_sec/60:.1f}分)...")
             await asyncio.sleep(30)
         elif diff_sec > 10:
-            # 10秒～5分前: 1秒ごと
+            # 10秒〜5分: 1秒ごと
             await asyncio.sleep(1)
         elif diff_sec > 0.1:
-            # 100ms～10秒前: 50msごと
+            # 100ms〜10秒: 50msごと（高精度）
             await asyncio.sleep(0.05)
         else:
-            # 100ms以内: 1msごと（バスト防止）
+            # 100ms以内: 1msごと（最終スパート）
             await asyncio.sleep(0.001)
 
 
@@ -96,11 +101,14 @@ async def save_ss(page, name: str):
     """スクリーンショット保存（デバッグ用）"""
     os.makedirs(SS_DIR, exist_ok=True)
     path = f"{SS_DIR}/{name}.png"
-    await page.screenshot(path=path, full_page=True)
-    print(f"  [SS] {path}")
+    try:
+        await page.screenshot(path=path, full_page=True)
+        print(f"  [SS] {path}")
+    except Exception as e:
+        print(f"  [SS-ERR] {path}: {e}")
 
 
-async def try_click(page, selectors: list[str], label: str, timeout: int = 5000) -> bool:
+async def try_click(page, selectors: list, label: str, timeout: int = 5000) -> bool:
     """複数セレクターを順番に試してクリック"""
     for sel in selectors:
         try:
@@ -112,12 +120,13 @@ async def try_click(page, selectors: list[str], label: str, timeout: int = 5000)
         except PWTimeout:
             pass
         except Exception as e:
-            print(f"  [SKIP] {label} ({sel}): {e}")
-    print(f"  [FAIL] {label}: 該当要素なし")
+            print(f"  [SKIP] {label} ({sel}): {type(e).__name__}")
+    print(f"  [FAIL] {label}: 全セレクター失敗")
     return False
 
 
-async def try_fill(page, selectors: list[str], value: str, label: str, timeout: int = 5000) -> bool:
+async def try_fill(page, selectors: list, value: str, label: str,
+                   timeout: int = 5000) -> bool:
     """複数セレクターを順番に試して入力"""
     for sel in selectors:
         try:
@@ -129,264 +138,269 @@ async def try_fill(page, selectors: list[str], value: str, label: str, timeout: 
         except PWTimeout:
             pass
         except Exception as e:
-            print(f"  [SKIP] {label} ({sel}): {e}")
-    print(f"  [FAIL] {label}: 該当要素なし")
+            print(f"  [SKIP] {label} ({sel}): {type(e).__name__}")
+    print(f"  [FAIL] {label}: 全セレクター失敗")
     return False
 
 
 async def step_login(page):
-    """Step1: ログイン"""
-    print("\n[Step 1] ログインページへ移動...")
+    """Step1: ログインページにアクセスしてログイン"""
+    print("\n" + "="*60)
+    print("[Step 1] ログインページへ移動...")
     await page.goto(LOGIN_URL, wait_until="networkidle", timeout=NAV_TIMEOUT)
     await save_ss(page, "01_login")
+    print(f"  URL: {page.url}")
 
-    # 利用者番号
-    await try_fill(page, [
-        'input[name="userid"]',
-        'input[name="user_id"]',
-        'input[name="memberNo"]',
-        'input[name="userno"]',
-        'input[name="loginId"]',
-        'input[name="login_id"]',
-        'input[name="id"]',
-        '#userid',
-        'input[type="text"]:first-of-type',
+    # 利用者番号入力
+    ok = await try_fill(page, [
+        'input[name="userid"]',   'input[name="user_id"]',
+        'input[name="memberNo"]', 'input[name="userno"]',
+        'input[name="loginId"]',  'input[name="login_id"]',
+        'input[name="id"]',       '#userid',
+        'input[type="text"]',
     ], USER_ID, "利用者番号")
+    if not ok:
+        raise RuntimeError("利用者番号フィールドが見つかりません")
 
-    # パスワード
-    await try_fill(page, [
-        'input[type="password"]',
-        'input[name="passwd"]',
-        'input[name="password"]',
-        'input[name="pass"]',
+    # パスワード入力
+    ok = await try_fill(page, [
+        'input[type="password"]', 'input[name="passwd"]',
+        'input[name="password"]', 'input[name="pass"]',
     ], PASSWORD, "パスワード")
+    if not ok:
+        raise RuntimeError("パスワードフィールドが見つかりません")
 
     # ログインボタン
-    await try_click(page, [
-        'input[value="ログイン"]',
-        'button:text("ログイン")',
-        'input[type="submit"]',
-        'button[type="submit"]',
-        'input[name="submit"]',
-        'a:text("ログイン")',
+    ok = await try_click(page, [
+        'input[value="ログイン"]',    'button:text("ログイン")',
+        'input[value="LOGIN"]',      'a:text("ログイン")',
+        'input[type="submit"]',      'button[type="submit"]',
     ], "ログインボタン")
+    if not ok:
+        raise RuntimeError("ログインボタンが見つかりません")
 
     await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
     await save_ss(page, "02_after_login")
-    print(f"  現在URL: {page.url}")
+    print(f"  ログイン後URL: {page.url}")
 
 
 async def step_favorite(page):
-    """Step2: お気に入りクリック → 絞り込み画面"""
-    print("\n[Step 2] お気に入りをクリック...")
+    """Step2: お気に入りをクリックして絞り込み画面へ"""
+    print("\n" + "="*60)
+    print("[Step 2] お気に入りをクリック...")
+
     clicked = await try_click(page, [
         'a:text("お気に入り")',
         'input[value="お気に入り"]',
         'button:text("お気に入り")',
-        'a:text-matches("お気に入り")',
-        '[onclick*="okiniri"]',
-        '[onclick*="favorite"]',
+        'a[href*="okiniri"]',
+        'a[href*="favorite"]',
         '[class*="favorite"]',
         '[id*="favorite"]',
+        '[onclick*="favorite"]',
+        '[onclick*="okiniri"]',
     ], "お気に入りリンク", timeout=ELEM_TIMEOUT)
 
     if not clicked:
-        # テキスト検索フォールバック
-        elems = await page.query_selector_all("a, button, input[type=button], input[type=submit]")
-        for elem in elems:
-            txt = (await elem.inner_text()).strip() if await elem.inner_text() else ""
+        # テキスト全走査フォールバック
+        for elem in await page.query_selector_all("a, button, input[type=button], input[type=submit]"):
             val = await elem.get_attribute("value") or ""
+            txt = ""
+            try:
+                txt = (await elem.inner_text()).strip()
+            except Exception:
+                pass
             if "お気に入り" in txt or "お気に入り" in val:
+                print(f"  [OK] お気に入り（フォールバック）: text={txt!r} val={val!r}")
                 await elem.click()
-                print(f"  [OK] お気に入り（フォールバック）: text={txt!r}")
                 clicked = True
                 break
+
     if not clicked:
-        raise RuntimeError("お気に入りリンクが見つかりません。analyze_site.pyで解析してください。")
+        await save_ss(page, "ERROR_favorite_not_found")
+        raise RuntimeError("お気に入りリンクが見つかりません。analyze_site.py で解析してください。")
 
     await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
     await save_ss(page, "03_favorite_filter")
-    print(f"  現在URL: {page.url}")
+    print(f"  絞り込み画面URL: {page.url}")
 
 
 async def step_select_date_and_search(page):
-    """Step3: 日付プルダウンで令和08年06月19日を選択して検索（最速）"""
-    print(f"\n[Step 3] 日付選択: {TARGET_DATE_WAREKI}")
+    """Step3: 日付プルダウンで対象日を選択して検索（最速）"""
+    print("\n" + "="*60)
+    print(f"[Step 3] 日付選択: {TARGET_DATE_WAREKI}")
 
-    # すべてのSELECTを走査
+    # ── アプローチ①: 1つのSELECTに日付がまとめて入っているパターン ──
     date_selected = False
     selects = await page.query_selector_all("select")
 
     for sel_elem in selects:
-        options = await sel_elem.query_selector_all("option")
-        for opt in options:
-            v = await opt.get_attribute("value") or ""
+        for opt in await sel_elem.query_selector_all("option"):
+            v   = await opt.get_attribute("value") or ""
             txt = (await opt.inner_text()).strip()
-            # テキスト一致 or value一致
             if (any(t in txt for t in TARGET_DATE_ALT_TEXTS)
                     or v in TARGET_DATE_ALT_VALUES):
                 sel_name = await sel_elem.get_attribute("name") or ""
-                # select_optionはvalueまたはlabelで指定
-                if v:
-                    await sel_elem.select_option(value=v)
-                else:
-                    await sel_elem.select_option(label=txt)
+                await (sel_elem.select_option(value=v) if v
+                       else sel_elem.select_option(label=txt))
                 print(f"  [OK] 日付選択: name={sel_name!r} value={v!r} text={txt!r}")
                 date_selected = True
                 break
         if date_selected:
             break
 
-    # 分割型（年・月・日が別SELECT）の場合
+    # ── アプローチ②: 年・月・日が別SELECTに分かれているパターン ──
     if not date_selected:
-        print("  [試行] 年月日が分割SELECTの可能性あり...")
-        # 令和08年 / 06月 / 19日 をそれぞれ探す
-        year_patterns  = ["令和08", "令和8", "08", "2026", "R08", "R8"]
-        month_patterns = ["06", "6", "６月", "06月"]
-        day_patterns   = ["19", "１９", "19日"]
+        print("  [試行] 年月日分割SELECTを検索...")
+
+        # 年選択
+        year_patterns  = ["令和08", "令和8", "08", "2026", "R08", "R8", "８", "８年"]
+        month_patterns = ["06", "6", "６", "06月", "６月"]
+        day_patterns   = ["19", "１９", "19日", "１９日"]
+
+        year_found = month_found = day_found = False
 
         for sel_elem in selects:
-            options = await sel_elem.query_selector_all("option")
-            for opt in options:
-                txt = (await opt.inner_text()).strip()
-                v   = await opt.get_attribute("value") or ""
-                if any(p == txt or p == v for p in year_patterns):
+            opts = await sel_elem.query_selector_all("option")
+            texts = [(await o.get_attribute("value") or "", (await o.inner_text()).strip())
+                     for o in opts]
+            for v, txt in texts:
+                if not year_found and any(p in txt or p == v for p in year_patterns):
                     await sel_elem.select_option(value=v or txt)
                     print(f"  [OK] 年選択: {txt!r}")
+                    year_found = True
                     break
-        for sel_elem in selects:
-            options = await sel_elem.query_selector_all("option")
-            for opt in options:
-                txt = (await opt.inner_text()).strip()
-                v   = await opt.get_attribute("value") or ""
-                if any(p == txt or p == v for p in month_patterns):
+                if not month_found and any(p == txt or p == v for p in month_patterns):
                     await sel_elem.select_option(value=v or txt)
                     print(f"  [OK] 月選択: {txt!r}")
-                    date_selected = True
+                    month_found = True
                     break
-        for sel_elem in selects:
-            options = await sel_elem.query_selector_all("option")
-            for opt in options:
-                txt = (await opt.inner_text()).strip()
-                v   = await opt.get_attribute("value") or ""
-                if any(p == txt or p == v for p in day_patterns):
+                if not day_found and any(p == txt or p == v for p in day_patterns):
                     await sel_elem.select_option(value=v or txt)
                     print(f"  [OK] 日選択: {txt!r}")
+                    day_found = True
                     break
+
+        date_selected = month_found or day_found or year_found
 
     if not date_selected:
         await save_ss(page, "ERROR_date_not_found")
         raise RuntimeError(
             f"日付 {TARGET_DATE_WAREKI} がプルダウンに見つかりません。"
-            "analyze_site.pyを実行してセレクターを確認してください。"
+            "analyze_site.pyを実行してSELECTのvalue一覧を確認してください。"
         )
 
-    # 検索ボタン
-    await try_click(page, [
-        'input[value="検索"]',
-        'button:text("検索")',
-        'input[value*="検索"]',
-        'input[type="submit"]',
-        'button[type="submit"]',
-        'a:text("検索")',
+    # 検索ボタンクリック
+    ok = await try_click(page, [
+        'input[value="検索"]',  'button:text("検索")',
+        'input[value*="検索"]', 'a:text("検索")',
+        'input[type="submit"]', 'button[type="submit"]',
     ], "検索ボタン")
+    if not ok:
+        raise RuntimeError("検索ボタンが見つかりません")
 
     await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
     await save_ss(page, "04_search_results")
-    print(f"  現在URL: {page.url}")
+    print(f"  検索結果URL: {page.url}")
 
 
 async def step_select_slot(page):
-    """Step4: D面 16:00〜18:00 の赤丸セルをクリック"""
-    print(f"\n[Step 4] {TARGET_FACILITY} {TARGET_TIME_START}〜{TARGET_TIME_END} セル選択...")
+    """Step4: D面 16:00〜18:00（赤丸）セルをクリック"""
+    print("\n" + "="*60)
+    print(f"[Step 4] {TARGET_FACILITY} {TARGET_TIME_START}〜{TARGET_TIME_END} セル選択...")
 
-    # ── アプローチ①: テキストで直接セルを探す ────────────────
-    # D面の行ヘッダーと16:00〜18:00列の交差セルを特定
     clicked = False
+    tables  = await page.query_selector_all("table")
 
-    # まずテーブル全体を走査してD面の行を特定
-    tables = await page.query_selector_all("table")
+    # ── アプローチ①: ヘッダーから列インデックスを特定してD面行と交差 ──
     for table in tables:
         rows = await table.query_selector_all("tr")
+        time_col_idx = -1
+
+        # 先頭3行からヘッダーを探す
+        for row in rows[:3]:
+            cells = await row.query_selector_all("td, th")
+            for ci, cell in enumerate(cells):
+                txt = (await cell.inner_text()).strip()
+                if TARGET_TIME_START in txt:
+                    time_col_idx = ci
+                    print(f"  [INFO] {TARGET_TIME_START} 列インデックス={ci}（テキスト: {txt!r}）")
+                    break
+            if time_col_idx >= 0:
+                break
+
+        if time_col_idx < 0:
+            continue
+
+        # D面の行を探してその列のセルをクリック
         for row in rows:
             cells = await row.query_selector_all("td, th")
-            cell_texts = []
-            for c in cells:
-                cell_texts.append((await c.inner_text()).strip())
+            row_has_d = any(
+                TARGET_FACILITY in (await c.inner_text()).strip()
+                for c in cells
+            )
+            if not row_has_d:
+                continue
 
-            # D面の行を特定
-            if TARGET_FACILITY in cell_texts:
-                d_idx = cell_texts.index(TARGET_FACILITY)
-                print(f"  [INFO] D面行発見 cells={cell_texts}")
-                # 同じ行で「16:00」または「16:00〜18:00」を含むセルをクリック
-                for i, cell in enumerate(cells):
-                    txt = cell_texts[i]
-                    # 赤丸（○、●、◎）を持つセルかつ時間が一致
-                    if TARGET_TIME_START in txt or "16" in txt:
-                        cls = await cell.get_attribute("class") or ""
-                        onclick = await cell.get_attribute("onclick") or ""
-                        print(f"  [FOUND] D面×16:00 セル: text={txt!r} class={cls!r}")
-                        await cell.click()
-                        clicked = True
-                        break
-                if clicked:
-                    break
+            print(f"  [INFO] D面行発見")
+            if time_col_idx < len(cells):
+                target_cell = cells[time_col_idx]
+                tc_txt = (await target_cell.inner_text()).strip()
+                tc_cls = await target_cell.get_attribute("class") or ""
+                tc_on  = await target_cell.get_attribute("onclick") or ""
+
+                # aタグが内包されていればそちらをクリック
+                a_tag  = await target_cell.query_selector("a")
+                clicker = a_tag if a_tag else target_cell
+                print(
+                    f"  [FOUND] D面×{TARGET_TIME_START}: "
+                    f"text={tc_txt!r} class={tc_cls!r} onclick={tc_on!r}"
+                )
+                await clicker.click()
+                clicked = True
+            break
+
         if clicked:
             break
 
-    # ── アプローチ②: ヘッダー行から列インデックスを特定 ──────
+    # ── アプローチ②: 全テキストからD面+時間セルを探す ──────────────
     if not clicked:
-        print("  [試行] ヘッダーから列インデックスで特定...")
+        print("  [試行] D面の行から直接セルのテキストで探す...")
         for table in tables:
             rows = await table.query_selector_all("tr")
-            time_col_idx = -1
-
-            # ヘッダー行で16:00〜18:00の列を探す
-            for row in rows[:3]:
-                cells = await row.query_selector_all("td, th")
-                for ci, cell in enumerate(cells):
-                    txt = (await cell.inner_text()).strip()
-                    if TARGET_TIME_START in txt and TARGET_TIME_END in txt:
-                        time_col_idx = ci
-                        print(f"  [INFO] 16:00〜18:00 列インデックス={ci}")
-                        break
-                if time_col_idx >= 0:
-                    break
-
-            if time_col_idx < 0:
-                continue
-
-            # D面の行でそのインデックスのセルをクリック
             for row in rows:
                 cells = await row.query_selector_all("td, th")
+                texts = [(await c.inner_text()).strip() for c in cells]
+                if TARGET_FACILITY not in texts and not any(TARGET_FACILITY in t for t in texts):
+                    continue
+                # D面行：16:00含むセルをクリック
                 for ci, cell in enumerate(cells):
-                    txt = (await cell.inner_text()).strip()
-                    if TARGET_FACILITY in txt:
-                        # D面行が見つかった
-                        if time_col_idx < len(cells):
-                            target_cell = cells[time_col_idx]
-                            tc_txt = (await target_cell.inner_text()).strip()
-                            tc_cls = await target_cell.get_attribute("class") or ""
-                            print(f"  [FOUND] D面×列{time_col_idx}: text={tc_txt!r} class={tc_cls!r}")
-                            await target_cell.click()
-                            clicked = True
+                    txt = texts[ci]
+                    if TARGET_TIME_START in txt:
+                        a   = await cell.query_selector("a")
+                        print(f"  [FOUND-T] D面×{TARGET_TIME_START}: text={txt!r}")
+                        await (a if a else cell).click()
+                        clicked = True
                         break
                 if clicked:
                     break
             if clicked:
                 break
 
-    # ── アプローチ③: onclick属性 or href にD面+時間の情報が含まれるリンク ──
+    # ── アプローチ③: onclick/href にD面+時間の情報が含まれる要素 ────
     if not clicked:
-        print("  [試行] onclick/href からD面16:00を探す...")
-        all_elems = await page.query_selector_all("[onclick], a[href]")
-        for elem in all_elems:
+        print("  [試行] onclick/href でD面+16を探す...")
+        for elem in await page.query_selector_all("[onclick], a[href]"):
             onclick = await elem.get_attribute("onclick") or ""
             href    = await elem.get_attribute("href") or ""
-            txt     = (await elem.inner_text()).strip()
+            txt     = ""
+            try:
+                txt = (await elem.inner_text()).strip()
+            except Exception:
+                pass
             combined = onclick + href + txt
-            if ("D面" in combined or "d面" in combined.lower()) and "16" in combined:
-                print(f"  [FOUND] onclick={onclick!r} href={href!r} text={txt!r}")
+            if (TARGET_FACILITY in combined or "d面" in combined.lower()) and "16" in combined:
+                print(f"  [FOUND-O] onclick={onclick!r} href={href!r} text={txt!r}")
                 await elem.click()
                 clicked = True
                 break
@@ -395,93 +409,105 @@ async def step_select_slot(page):
         await save_ss(page, "ERROR_slot_not_found")
         raise RuntimeError(
             "D面 16:00〜18:00 のセルが見つかりません。"
-            "analyze_site.pyのscreenshotsフォルダを確認してください。"
+            f"{SS_DIR}/04_search_results.png を確認してセレクターを特定してください。"
         )
 
     await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
     await save_ss(page, "05_slot_selected")
-    print(f"  現在URL: {page.url}")
+    print(f"  スロット選択後URL: {page.url}")
 
 
 async def step_confirm1(page):
-    """Step5: 確定①（料金確認画面へ）"""
-    print("\n[Step 5] 確定①クリック...")
-    clicked = await try_click(page, [
-        'input[value="確定"]',
-        'input[value="確認"]',
-        'button:text("確定")',
-        'button:text("確認")',
-        'input[value*="確定"]',
-        'input[value*="確認"]',
-        'a:text("確定")',
-        'a:text("確認")',
-        'input[type="submit"]',
-        'button[type="submit"]',
-    ], "確定①ボタン")
+    """Step5: 確定①（料金確認画面へ進む）"""
+    print("\n" + "="*60)
+    print("[Step 5] 確定①クリック...")
 
-    if not clicked:
-        raise RuntimeError("確定①ボタンが見つかりません。")
+    ok = await try_click(page, [
+        'input[value="確定"]',    'input[value="確認"]',
+        'input[value*="確定"]',   'input[value*="確認"]',
+        'button:text("確定")',    'button:text("確認")',
+        'a:text("確定")',         'a:text("確認")',
+        'input[type="submit"]',  'button[type="submit"]',
+    ], "確定①ボタン", timeout=ELEM_TIMEOUT)
+
+    if not ok:
+        await save_ss(page, "ERROR_confirm1_not_found")
+        raise RuntimeError("確定①ボタンが見つかりません")
 
     await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
-    await save_ss(page, "06_confirm1")
-    print(f"  現在URL: {page.url}")
+    await save_ss(page, "06_confirm1_done")
+    print(f"  確定①後URL: {page.url}")
 
 
 async def step_confirm2(page):
     """Step6: 確定②（最終確定）
-    Tampermonkey で window.confirm を無効化済みのため
-    dialog イベントは発火しない前提
+    ・Tampermonkey で window.confirm が無効化されている前提
+    ・念のため JS 上書き & Playwright のダイアログ自動承認も設定
     """
-    print("\n[Step 6] 確定②クリック...")
+    print("\n" + "="*60)
+    print("[Step 6] 確定②クリック...")
 
-    # 万一 confirm ダイアログが来た場合のフォールバック（自動承認）
-    page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+    # window.confirm を JS で上書き（Tampermonkey が無い環境の保険）
+    await page.evaluate("window.confirm = () => true; window.alert = () => {};")
 
-    clicked = await try_click(page, [
-        'input[value="確定"]',
-        'input[value="予約確定"]',
-        'input[value="最終確定"]',
-        'button:text("確定")',
-        'button:text("予約確定")',
-        'input[value*="確定"]',
-        'a:text("確定")',
-        'input[type="submit"]',
-        'button[type="submit"]',
-    ], "確定②ボタン")
+    # Playwright レベルでもダイアログを自動承認
+    page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
 
-    if not clicked:
-        raise RuntimeError("確定②ボタンが見つかりません。")
+    ok = await try_click(page, [
+        'input[value="予約確定"]',  'input[value="確定"]',
+        'input[value="最終確定"]',  'input[value*="確定"]',
+        'button:text("予約確定")',  'button:text("確定")',
+        'a:text("予約確定")',       'a:text("確定")',
+        'input[type="submit"]',    'button[type="submit"]',
+    ], "確定②ボタン", timeout=ELEM_TIMEOUT)
+
+    if not ok:
+        await save_ss(page, "ERROR_confirm2_not_found")
+        raise RuntimeError("確定②ボタンが見つかりません")
 
     await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT)
     await save_ss(page, "07_final_result")
-    print(f"  現在URL: {page.url}")
+    print(f"  確定②後URL: {page.url}")
 
-    # 完了確認
+    # 完了キーワード確認
     body_text = await page.inner_text("body")
-    if any(w in body_text for w in ["予約完了", "受付完了", "受付番号", "予約番号", "完了"]):
+    completion_words = ["予約完了", "受付完了", "受付番号", "予約番号", "完了しました", "受付しました"]
+    if any(w in body_text for w in completion_words):
         print("\n✅ 予約完了を確認しました！")
     else:
         print("\n⚠️  完了メッセージが見つかりません。スクリーンショットを確認してください。")
-    print(f"  最終本文（先頭200字）: {body_text[:200]}")
+    print(f"  最終本文（先頭300字）: {body_text[:300]!r}")
 
 
 async def main():
     opts = parse_args()
+
     print("=" * 60)
     print("まんまるよやく2 自動予約スクリプト")
-    print(f"対象日: {TARGET_DATE_WAREKI}  施設: {TARGET_FACILITY} {TARGET_TIME_START}〜{TARGET_TIME_END}")
-    print(f"モード: {'即時実行' if not opts['wait_for_open'] else '時報待ち(5:00)'} / "
-          f"{'ブラウザ表示あり' if not opts['headless'] else 'ヘッドレス'}")
+    print(f"対象日    : {TARGET_DATE_WAREKI}")
+    print(f"施設      : {TARGET_FACILITY} {TARGET_TIME_START}〜{TARGET_TIME_END}")
+    wait_str  = WAIT_UNTIL.strftime("%Y-%m-%d %H:%M:%S JST")
+    mode_str  = f"即時実行" if not opts["wait_for_open"] else f"時報待ち({wait_str})"
+    disp_str  = "ブラウザ表示あり" if not opts["headless"] else "ヘッドレス"
+    print(f"モード    : {mode_str} / {disp_str}")
     print("=" * 60)
 
     # 時報待ち
     if opts["wait_for_open"]:
-        await wait_until_open()
+        now_jst = datetime.datetime.now(tz=WAIT_UNTIL.tzinfo)
+        if now_jst >= WAIT_UNTIL:
+            print(f"[INFO] 既に開始時刻を過ぎています。即時実行します。")
+        else:
+            await wait_until_open()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=opts["headless"],
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+            ],
         )
         context = await browser.new_context(
             user_agent=(
@@ -490,6 +516,7 @@ async def main():
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
             locale="ja-JP",
+            ignore_https_errors=True,
         )
         page = await context.new_page()
 
@@ -500,10 +527,16 @@ async def main():
             await step_select_slot(page)
             await step_confirm1(page)
             await step_confirm2(page)
-            print("\n✅ すべてのステップが完了しました。")
+
+            print("\n" + "="*60)
+            print("✅ すべてのステップが完了しました。")
+            print(f"   スクリーンショット: ./{SS_DIR}/")
+            print("=" * 60)
+
         except Exception as e:
             await save_ss(page, "ERROR_final")
-            print(f"\n❌ エラー: {e}")
+            print(f"\n❌ エラー発生: {e}")
+            print(f"   スクリーンショット: ./{SS_DIR}/ を確認してください。")
             raise
         finally:
             await browser.close()
