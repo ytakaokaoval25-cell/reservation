@@ -29,7 +29,7 @@ python analyze_site.py
 - `03_after_favorite.html/png` — お気に入り絞り込み画面
 - `04_search_results.html/png` — 検索結果（予約表）
 
-コンソールに出力された `FORM / INPUT / SELECT / OPTION` の情報でセレクターを確認し、
+コンソールに出力された `FORM / INPUT / SELECT / BUTTON / A` の情報でセレクターを確認し、
 必要であれば `reserve.py` の定数・セレクターリストを修正してください。
 
 ---
@@ -50,7 +50,7 @@ python reserve.py --now --headful
 python reserve.py --headful
 ```
 
-- 朝5:00:00 ぴったりまでミリ秒単位で待機
+- 朝5:00:00.000 ぴったりまでミリ秒単位で待機
 - 5:00:00 到達と同時に検索・予約処理を開始
 
 ヘッドレスで実行する場合（サーバー/cronなど）:
@@ -66,10 +66,15 @@ python reserve.py
 `reserve.py` の上部定数を変更してください：
 
 ```python
-TARGET_DATE_WAREKI    = "令和08年07月XX日"   # 7月の目標日に変更
-TARGET_DATE_VALUE     = "2026XXXX"           # 対応するvalue値
-TARGET_DATE_ALT_VALUES = ["2026XXXX", ...]   # 同上
-TARGET_DATE_ALT_TEXTS  = ["令和08年07月XX日", ...]
+TARGET_DATE_TEXTS = [
+    "令和08年07月XX日",   # 7月の目標日に変更
+    "令和8年7月XX日",
+    ...
+]
+TARGET_DATE_VALUES = [
+    "2026XXXX",           # 対応するvalue値（analyze_site.pyで確認）
+    ...
+]
 ```
 
 ---
@@ -82,8 +87,12 @@ TARGET_DATE_ALT_TEXTS  = ["令和08年07月XX日", ...]
 
 ### 日付が見つからない場合
 - `analyze_site.py` の「日付プルダウン詳細解析」出力を確認
-- `TARGET_DATE_ALT_VALUES` / `TARGET_DATE_ALT_TEXTS` に実際のvalue/textを追加
+- `TARGET_DATE_TEXTS` / `TARGET_DATE_VALUES` に実際のvalue/textを追加
 
 ### D面セルが見つからない場合
 - `analysis_output/04_search_results.html` でテーブル構造を確認
 - `reserve.py` の `step_select_slot()` 内のアプローチ②③を修正
+
+### window.confirm が想定外に発火する場合
+- `reserve.py` 内で `context.add_init_script("window.confirm = () => true;")` により全画面で自動承認
+- さらに各 `step_confirm*` 内で `page.on("dialog", ...)` でフォールバック処理も実装済み
