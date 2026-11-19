@@ -64,32 +64,39 @@ def parse_args():
     }
 
 
-async def wait_until_open():
-    """朝5:00:00.000 ぴったりまでミリ秒単位で待機"""
-    print("[時報待ち] 朝5:00:00.000 まで待機します...")
-    while True:
-        now = datetime.datetime.now()
-        target = now.replace(
-            hour=OPEN_HOUR, minute=OPEN_MINUTE, second=OPEN_SECOND, microsecond=0
-        )
-        diff_sec = (target - now).total_seconds()
+def compute_open_target(now: datetime.datetime) -> datetime.datetime:
+    """待機対象の 5:00:00.000 を「起動時に一度だけ」決める。
+    - 5:00 より前に起動          → 当日 5:00
+    - 5:00〜5:59 に起動（遅刻）  → 即時実行（当日 5:00 = 過去）
+    - 6:00 以降に起動（前日夜など）→ 翌日 5:00
+    ※ 旧実装はループ毎に now.replace(hour=5) していたため、
+       前日夜に起動すると「当日5:00は過去」と判定され即フライングしていた。
+    """
+    today_open = now.replace(hour=OPEN_HOUR, minute=OPEN_MINUTE,
+                             second=OPEN_SECOND, microsecond=0)
+    if now < today_open or now - today_open < datetime.timedelta(hours=1):
+        return today_open
+    return today_open + datetime.timedelta(days=1)
 
+
+async def wait_until_open(target: datetime.datetime):
+    """target（5:00:00.000）までミリ秒単位で待機。フライング防止のため
+    最後の 50ms はビジーウェイトで刻む。"""
+    print(f"[時報待ち] {target:%Y-%m-%d %H:%M:%S.%f} まで待機します...")
+    while True:
+        diff_sec = (target - datetime.datetime.now()).total_seconds()
         if diff_sec <= 0:
-            print(f"[時報] 開始時刻到達: {datetime.datetime.now().strftime('%H:%M:%S.%f')}")
             break
         elif diff_sec > 300:
-            # 5分以上前: 30秒ごとにチェック
             print(f"[時報待ち] あと {diff_sec:.0f}秒 ({diff_sec/60:.1f}分)...")
-            await asyncio.sleep(30)
+            await asyncio.sleep(min(30, diff_sec - 300))
         elif diff_sec > 10:
-            # 10秒～5分前: 1秒ごと
-            await asyncio.sleep(1)
-        elif diff_sec > 0.1:
-            # 100ms～10秒前: 50msごと
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(min(1, diff_sec - 10))
+        elif diff_sec > 0.05:
+            await asyncio.sleep(min(0.01, diff_sec - 0.05))
         else:
-            # 100ms以内: 1msごと（バスト防止）
-            await asyncio.sleep(0.001)
+            pass  # 50ms 以内: ビジーウェイト（asyncio.sleep の粒度誤差を排除）
+    print(f"[時報] 開始時刻到達: {datetime.datetime.now():%H:%M:%S.%f}")
 
 
 async def save_ss(page, name: str):
@@ -474,9 +481,8 @@ async def main():
           f"{'ブラウザ表示あり' if not opts['headless'] else 'ヘッドレス'}")
     print("=" * 60)
 
-    # 時報待ち
-    if opts["wait_for_open"]:
-        await wait_until_open()
+    # 待機対象時刻は起動時に一度だけ確定する（フライング防止）
+    open_target = compute_open_target(datetime.datetime.now()) if opts["wait_for_open"] else None
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -494,7 +500,13 @@ async def main():
         page = await context.new_page()
 
         try:
+            # ログインは 5:00 前に済ませておく（時報後の数秒を節約）
             await step_login(page)
+            if open_target is not None:
+                await wait_until_open(open_target)
+            # 「お気に入り」は時報"後"にクリックする。
+            # 5:00 前に開いた絞り込み画面のプルダウンには新しい月の日付が
+            # まだ含まれていないため、時報後に画面を取り直す必要がある。
             await step_favorite(page)
             await step_select_date_and_search(page)
             await step_select_slot(page)
